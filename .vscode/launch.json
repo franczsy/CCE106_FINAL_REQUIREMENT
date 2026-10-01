@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Canteen FX - Chrome",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "chrome",
+      "toolArgs": [
+        "--dart-define=SUPABASE_ANON_KEY=sb_publishable_w5WIwZrEYm0u9h74o4FsDw_i8q0XkF8"
+      ]
+    }
+  ]
+}
