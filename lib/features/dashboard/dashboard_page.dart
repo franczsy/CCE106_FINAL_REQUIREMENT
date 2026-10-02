@@ -3,14 +3,50 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+                                                          import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/providers.dart';
+import '../../core/supabase_config.dart';
 
-class DashboardPage extends ConsumerWidget {
+class DashboardPage extends ConsumerStatefulWidget {
   const DashboardPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends ConsumerState<DashboardPage> {
+  Future<void> _signOut() async {
+    try {
+      await Supabase.instance.client.auth.signOut();
+      if (mounted) setState(() {});
+    } on AuthException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sign out failed. Please try again.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUser = supabaseAnonKey.isEmpty
+        ? null
+        : Supabase.instance.client.auth.currentUser;
+    final studentName = currentUser?.userMetadata?['full_name']
+        ?.toString()
+        .trim();
+    final studentLabel = studentName == null || studentName.isEmpty
+        ? 'Student account'
+        : studentName;
+    final isAdmin = currentUser?.appMetadata['role']
+        ?.toString()
+        .toLowerCase() ==
+      'admin';
     final products = ref.watch(productsProvider);
     final productSections = {
       'Meals': products
@@ -100,24 +136,74 @@ class DashboardPage extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                alignment: WrapAlignment.end,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: () => context.push('/login?mode=student'),
-                    icon: const Icon(Icons.person_outline),
-                    label: const Text('Student sign in'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: () => context.push('/login?mode=staff'),
-                    icon: const Icon(Icons.lock_outline),
-                    label: const Text('Staff login'),
-                  ),
-                ],
+            SizedBox(
+              width: double.infinity,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final accountActions = Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    alignment: WrapAlignment.end,
+                    children: [
+                      if (currentUser == null) ...[
+                        OutlinedButton.icon(
+                          onPressed: () => context.push('/login?mode=student'),
+                          icon: const Icon(Icons.person_outline),
+                          label: const Text('Student sign in'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () => context.push('/login?mode=staff'),
+                          icon: const Icon(Icons.lock_outline),
+                          label: const Text('Staff login'),
+                        ),
+                      ] else if (isAdmin) ...[
+                        OutlinedButton.icon(
+                          onPressed: () => context.go('/admin'),
+                          icon: const Icon(Icons.admin_panel_settings_outlined),
+                          label: const Text('Admin dashboard'),
+                        ),
+                      ] else
+                        OutlinedButton.icon(
+                          onPressed: () => context.push('/student'),
+                          icon: const Icon(Icons.person_outline),
+                          label: Text(studentLabel),
+                        ),
+                    ],
+                  );
+
+                  if (currentUser == null) {
+                    return Align(
+                      alignment: Alignment.centerRight,
+                      child: accountActions,
+                    );
+                  }
+
+                  final signOutButton = TextButton.icon(
+                    onPressed: _signOut,
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Sign out'),
+                  );
+
+                  if (constraints.maxWidth < 430) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: signOutButton,
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: accountActions,
+                        ),
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [signOutButton, const Spacer(), accountActions],
+                  );
+                },
               ),
             ),
           ],
@@ -166,7 +252,7 @@ class _FoodCard extends StatelessWidget {
                       ? Image.network(
                           imageUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) =>
+                          errorBuilder: (_, _, _) =>
                               Text(emoji, style: const TextStyle(fontSize: 68)),
                         )
                       : Text(emoji, style: const TextStyle(fontSize: 68)),
@@ -192,3 +278,4 @@ class _FoodCard extends StatelessWidget {
     );
   }
 }
+  

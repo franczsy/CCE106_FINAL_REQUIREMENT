@@ -1,13 +1,19 @@
+```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/providers.dart';
+import '../../core/supabase_config.dart';
 import '../orders/order_dialogs.dart';
 
 class StudentPage extends ConsumerStatefulWidget {
-  const StudentPage({super.key, this.initialCategory = 'Meals'});
+  const StudentPage({
+    super.key,
+    this.initialCategory = 'Meals',
+  });
 
   final String initialCategory;
 
@@ -24,14 +30,163 @@ class _StudentPageState extends ConsumerState<StudentPage> {
     category = widget.initialCategory;
   }
 
+  // ============================================================
+  // EDIT PROFILE
+  // ============================================================
+
+  Future<void> _editProfile() async {
+    try {
+      // Get the latest user/session information from Supabase.
+      await Supabase.instance.client.auth.refreshSession();
+
+      final user = Supabase.instance.client.auth.currentUser;
+
+      if (user == null) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please log in again.'),
+          ),
+        );
+
+        return;
+      }
+
+      final metadata = user.userMetadata ?? {};
+
+      // Load the CURRENT saved profile values.
+      final currentName =
+          metadata['full_name']?.toString().trim() ?? '';
+
+      final currentStudentId =
+          metadata['student_id']?.toString().trim() ?? '';
+
+      final currentPhone =
+          metadata['phone_number']?.toString().trim() ?? '';
+
+      final currentDetails = _CustomerDetails(
+        name: currentName,
+        studentId: currentStudentId,
+        phoneNumber: currentPhone,
+      );
+
+      final updatedDetails =
+          await showDialog<_CustomerDetails>(
+        context: context,
+        builder: (_) => _CustomerDetailsDialog(
+          initialName: currentDetails.name,
+          initialStudentId: currentDetails.studentId,
+          initialPhoneNumber: currentDetails.phoneNumber,
+          isEditingProfile: true,
+        ),
+      );
+
+      if (updatedDetails == null) {
+        return;
+      }
+
+      // ========================================================
+      // SAVE PROFILE
+      // ========================================================
+
+      final response =
+          await Supabase.instance.client.auth.updateUser(
+        UserAttributes(
+          data: {
+            'full_name': updatedDetails.name,
+            'student_id': updatedDetails.studentId,
+            'phone_number': updatedDetails.phoneNumber,
+          },
+        ),
+      );
+
+      // Make sure Supabase actually returned the updated user.
+      final updatedUser = response.user;
+
+      if (updatedUser == null) {
+        throw Exception(
+          'Supabase did not return the updated user.',
+        );
+      }
+
+      // Refresh local session so the new metadata is available
+      // immediately throughout the application.
+      await Supabase.instance.client.auth.refreshSession();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Profile saved successfully!'),
+        ),
+      );
+
+      // Rebuild the page using the newly saved profile.
+      setState(() {});
+    } on AuthException catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Unable to save profile: ${error.message}',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Unable to save profile: $error',
+          ),
+        ),
+      );
+    }
+  }
+
+  // ============================================================
+  // CHECKOUT
+  // ============================================================
+
   Future<void> checkout() async {
     final cart = ref.read(cartProvider);
+
     if (cart.isEmpty) return;
 
-    final customerDetails = await showDialog<_CustomerDetails>(
-      context: context,
-      builder: (_) => const _CustomerDetailsDialog(),
+    // Get the currently signed-in user.
+    final user =
+        Supabase.instance.client.auth.currentUser;
+
+    final metadata = user?.userMetadata ?? {};
+
+    // Load saved profile information.
+    final savedDetails = _CustomerDetails(
+      name: metadata['full_name']?.toString().trim() ?? '',
+      studentId:
+          metadata['student_id']?.toString().trim() ?? '',
+      phoneNumber:
+          metadata['phone_number']?.toString().trim() ?? '',
     );
+
+    final hasSavedDetails =
+        savedDetails.name.isNotEmpty &&
+        savedDetails.studentId.isNotEmpty &&
+        savedDetails.phoneNumber.isNotEmpty;
+
+    final customerDetails = hasSavedDetails
+        ? savedDetails
+        : await showDialog<_CustomerDetails>(
+            context: context,
+            builder: (_) => _CustomerDetailsDialog(
+              initialName: savedDetails.name,
+              initialStudentId: savedDetails.studentId,
+              initialPhoneNumber: savedDetails.phoneNumber,
+            ),
+          );
+
     if (customerDetails == null) return;
 
     final order = ref
@@ -43,38 +198,57 @@ class _StudentPageState extends ConsumerState<StudentPage> {
           items: cart,
           total: ref.read(cartProvider.notifier).total,
         );
+
     ref.read(cartProvider.notifier).clear();
+
     if (!mounted) return;
 
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('Order #${order.orderNumber} Confirmed'),
+        title: Text(
+          'Order #${order.orderNumber} Confirmed',
+        ),
         content: SizedBox(
           width: 300,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Show this QR code at Express Pickup.'),
+              const Text(
+                'Show this QR code at Express Pickup.',
+              ),
               const SizedBox(height: 16),
-              QrImageView(data: order.qrToken, size: 220),
-              Text('Status: ${statusText(order.status)}'),
+              QrImageView(
+                data: order.qrToken,
+                size: 220,
+              ),
+              Text(
+                'Status: ${statusText(order.status)}',
+              ),
             ],
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => showReceiptDialog(context, order),
+            onPressed: () => showReceiptDialog(
+              context,
+              order,
+            ),
             child: const Text('RECEIPT'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(dialogContext),
+            onPressed: () =>
+                Navigator.pop(dialogContext),
             child: const Text('DONE'),
           ),
         ],
       ),
     );
   }
+
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
@@ -83,22 +257,60 @@ class _StudentPageState extends ConsumerState<StudentPage> {
         .where(
           (product) =>
               product.category == category ||
-              (category == 'Snacks' && product.category == 'Desserts'),
+              (category == 'Snacks' &&
+                  product.category == 'Desserts'),
         )
         .toList();
+
     final cart = ref.watch(cartProvider);
+
     final orders = ref
         .watch(ordersProvider)
-        .where((order) => order.studentId.isNotEmpty)
+        .where(
+          (order) => order.studentId.isNotEmpty,
+        )
         .toList();
-    final cartCount = cart.fold<int>(0, (count, item) => count + item.quantity);
-    final cartTotal = ref.read(cartProvider.notifier).total;
-    const categories = ['Meals', 'Drinks', 'Snacks'];
+
+    final cartCount = cart.fold<int>(
+      0,
+      (count, item) => count + item.quantity,
+    );
+
+    final cartTotal =
+        ref.read(cartProvider.notifier).total;
+
+    const categories = [
+      'Meals',
+      'Drinks',
+      'Snacks',
+    ];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Student Ordering'),
+
         actions: [
+          // ========================================================
+          // EDIT PROFILE
+          // ========================================================
+
+          TextButton(
+            onPressed: _editProfile,
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white,
+            ),
+            child: const Text(
+              'Edit Profile',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+
+          // ========================================================
+          // ORDER HISTORY
+          // ========================================================
+
           IconButton(
             tooltip: 'Order history',
             onPressed: () => showOrderHistoryDialog(
@@ -106,22 +318,41 @@ class _StudentPageState extends ConsumerState<StudentPage> {
               orders,
               title: 'My order history',
             ),
-            icon: const Icon(Icons.history_outlined),
+            icon: const Icon(
+              Icons.history_outlined,
+            ),
           ),
+
+          // ========================================================
+          // HOME
+          // ========================================================
+
           IconButton(
             tooltip: 'Back to menu',
             onPressed: () => context.go('/'),
-            icon: const Icon(Icons.home_outlined),
+            icon: const Icon(
+              Icons.home_outlined,
+            ),
           ),
         ],
       ),
+
       body: SafeArea(
         child: Column(
           children: [
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  16,
+                  16,
+                  8,
+                ),
                 children: [
+                  // ==================================================
+                  // HEADER
+                  // ==================================================
+
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(18),
@@ -129,20 +360,27 @@ class _StudentPageState extends ConsumerState<StudentPage> {
                         children: [
                           Expanded(
                             child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
                               children: [
                                 const Text(
                                   'Ready to order?',
                                   style: TextStyle(
                                     fontSize: 24,
-                                    fontWeight: FontWeight.w800,
+                                    fontWeight:
+                                        FontWeight.w800,
                                   ),
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
                                   'Choose your campus favorites and head to pickup when ready.',
-                                  style: Theme.of(context).textTheme.bodyMedium
-                                      ?.copyWith(color: Colors.white70),
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodyMedium
+                                      ?.copyWith(
+                                        color:
+                                            Colors.white70,
+                                      ),
                                 ),
                               ],
                             ),
@@ -151,143 +389,246 @@ class _StudentPageState extends ConsumerState<StudentPage> {
                           Icon(
                             Icons.fastfood_outlined,
                             size: 34,
-                            color: Theme.of(context).colorScheme.primary,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primary,
                           ),
                         ],
                       ),
                     ),
                   ),
+
                   const SizedBox(height: 16),
+
+                  // ==================================================
+                  // CATEGORIES
+                  // ==================================================
+
                   SizedBox(
                     height: 48,
                     child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
+                      scrollDirection:
+                          Axis.horizontal,
                       itemCount: categories.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (context, index) {
-                        final option = categories[index];
+                      separatorBuilder: (_, _) =>
+                          const SizedBox(width: 8),
+                      itemBuilder:
+                          (context, index) {
+                        final option =
+                            categories[index];
+
                         return ChoiceChip(
                           label: Text(option),
-                          selected: option == category,
-                          onSelected: (_) => setState(() => category = option),
+                          selected:
+                              option == category,
+                          onSelected: (_) {
+                            setState(() {
+                              category = option;
+                            });
+                          },
                         );
                       },
                     ),
                   ),
+
                   const SizedBox(height: 18),
+
+                  // ==================================================
+                  // MENU TITLE
+                  // ==================================================
+
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment:
+                        MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
                         '$category Menu',
-                        style: Theme.of(context).textTheme.titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(
+                              fontWeight:
+                                  FontWeight.w700,
+                            ),
                       ),
                       Text(
                         '${products.length} items',
-                        style: Theme.of(context).textTheme.bodyMedium
-                            ?.copyWith(color: Colors.white70),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(
+                              color:
+                                  Colors.white70,
+                            ),
                       ),
                     ],
                   ),
+
                   const SizedBox(height: 12),
+
+                  // ==================================================
+                  // PRODUCTS
+                  // ==================================================
+
                   GridView.builder(
                     shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
+                    physics:
+                        const NeverScrollableScrollPhysics(),
                     padding: EdgeInsets.zero,
                     gridDelegate:
                         const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 240,
-                          mainAxisExtent: 248,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                        ),
+                      maxCrossAxisExtent: 240,
+                      mainAxisExtent: 248,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                    ),
                     itemCount: products.length,
-                    itemBuilder: (context, index) {
-                      final product = products[index];
+                    itemBuilder:
+                        (context, index) {
+                      final product =
+                          products[index];
+
                       return Card(
                         child: Padding(
-                          padding: const EdgeInsets.all(12),
+                          padding:
+                              const EdgeInsets.all(12),
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment:
+                                CrossAxisAlignment
+                                    .start,
                             children: [
                               Center(
                                 child: SizedBox(
                                   height: 64,
                                   width: 64,
-                                  child: product.imageUrl != null
-                                      ? Image.network(
-                                          product.imageUrl!,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) => Text(
-                                            product.emoji,
-                                            style: const TextStyle(
-                                              fontSize: 48,
-                                            ),
-                                          ),
-                                        )
-                                      : product.imageBytes != null
-                                      ? ClipRRect(
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                          child: Image.memory(
-                                            product.imageBytes!,
-                                            fit: BoxFit.cover,
-                                          ),
-                                        )
-                                      : Center(
-                                          child: Text(
-                                            product.emoji,
-                                            style: const TextStyle(
-                                              fontSize: 48,
-                                            ),
-                                          ),
-                                        ),
+                                  child:
+                                      product.imageUrl !=
+                                              null
+                                          ? Image.network(
+                                              product
+                                                  .imageUrl!,
+                                              fit: BoxFit
+                                                  .cover,
+                                              errorBuilder:
+                                                  (_, _, _) =>
+                                                      Text(
+                                                product
+                                                    .emoji,
+                                                style:
+                                                    const TextStyle(
+                                                  fontSize:
+                                                      48,
+                                                ),
+                                              ),
+                                            )
+                                          : product
+                                                      .imageBytes !=
+                                                  null
+                                              ? ClipRRect(
+                                                  borderRadius:
+                                                      BorderRadius
+                                                          .circular(
+                                                    12,
+                                                  ),
+                                                  child:
+                                                      Image.memory(
+                                                    product
+                                                        .imageBytes!,
+                                                    fit: BoxFit
+                                                        .cover,
+                                                  ),
+                                                )
+                                              : Center(
+                                                  child:
+                                                      Text(
+                                                    product
+                                                        .emoji,
+                                                    style:
+                                                        const TextStyle(
+                                                      fontSize:
+                                                          48,
+                                                    ),
+                                                  ),
+                                                ),
                                 ),
                               ),
+
                               const SizedBox(height: 8),
+
                               Text(
                                 product.name,
                                 maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
+                                overflow:
+                                    TextOverflow
+                                        .ellipsis,
+                                style:
+                                    const TextStyle(
+                                  fontWeight:
+                                      FontWeight.w700,
                                 ),
                               ),
+
                               const SizedBox(height: 4),
+
                               Text(
-                                product.description.isEmpty
+                                product.description
+                                        .isEmpty
                                     ? 'Freshly prepared campus favorite'
-                                    : product.description,
+                                    : product
+                                        .description,
                                 maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
+                                overflow:
+                                    TextOverflow
+                                        .ellipsis,
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: Colors.white.withOpacity(0.7),
+                                  color: Colors.white
+                                      .withValues(
+                                    alpha: 0.7,
+                                  ),
                                 ),
                               ),
+
                               const Spacer(),
+
                               Row(
                                 mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                    MainAxisAlignment
+                                        .spaceBetween,
                                 children: [
                                   Expanded(
                                     child: Text(
                                       '₱${product.price.toStringAsFixed(2)}',
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
+                                      overflow:
+                                          TextOverflow
+                                              .ellipsis,
+                                      style:
+                                          const TextStyle(
+                                        fontWeight:
+                                            FontWeight
+                                                .bold,
                                       ),
                                     ),
                                   ),
                                   IconButton.filledTonal(
-                                    tooltip: 'Add ${product.name} to cart',
-                                    onPressed: () => ref
-                                        .read(cartProvider.notifier)
-                                        .add(product),
-                                    visualDensity: VisualDensity.compact,
-                                    icon: const Icon(Icons.add_shopping_cart),
+                                    tooltip:
+                                        'Add ${product.name} to cart',
+                                    onPressed: () =>
+                                        ref
+                                            .read(
+                                              cartProvider
+                                                  .notifier,
+                                            )
+                                            .add(
+                                              product,
+                                            ),
+                                    visualDensity:
+                                        VisualDensity
+                                            .compact,
+                                    icon: const Icon(
+                                      Icons
+                                          .add_shopping_cart,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -297,82 +638,145 @@ class _StudentPageState extends ConsumerState<StudentPage> {
                       );
                     },
                   ),
+
+                  // ==================================================
+                  // RECENT ORDERS
+                  // ==================================================
+
                   if (orders.isNotEmpty) ...[
                     const SizedBox(height: 20),
+
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment:
+                          MainAxisAlignment
+                              .spaceBetween,
                       children: [
                         Text(
                           'Recent orders',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.w700),
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(
+                                fontWeight:
+                                    FontWeight.w700,
+                              ),
                         ),
                         TextButton(
-                          onPressed: () => showOrderHistoryDialog(
+                          onPressed: () =>
+                              showOrderHistoryDialog(
                             context,
                             orders,
-                            title: 'My order history',
+                            title:
+                                'My order history',
                           ),
-                          child: const Text('View all'),
+                          child:
+                              const Text('View all'),
                         ),
                       ],
                     ),
-                    ...orders
-                        .take(2)
-                        .map(
-                          (order) => ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: QrImageView(data: order.qrToken, size: 52),
-                            title: Text('Order #${order.orderNumber}'),
-                            subtitle: Text(
-                              '${statusText(order.status)} · ₱${order.total.toStringAsFixed(2)}',
-                            ),
-                            trailing: IconButton(
-                              tooltip: 'View receipt',
-                              onPressed: () =>
-                                  showReceiptDialog(context, order),
-                              icon: const Icon(Icons.receipt_long_outlined),
-                            ),
+
+                    ...orders.take(2).map(
+                      (order) => ListTile(
+                        contentPadding:
+                            EdgeInsets.zero,
+
+                        leading: QrImageView(
+                          data: order.qrToken,
+                          size: 52,
+                        ),
+
+                        title: Text(
+                          'Order #${order.orderNumber}',
+                        ),
+
+                        subtitle: Text(
+                          '${statusText(order.status)} · ₱${order.total.toStringAsFixed(2)}',
+                        ),
+
+                        trailing:
+                            IconButton(
+                          tooltip:
+                              'View receipt',
+                          onPressed: () =>
+                              showReceiptDialog(
+                            context,
+                            order,
+                          ),
+                          icon: const Icon(
+                            Icons
+                                .receipt_long_outlined,
                           ),
                         ),
+                      ),
+                    ),
                   ],
                 ],
               ),
             ),
+
+            // ========================================================
+            // CART
+            // ========================================================
+
             Card(
-              margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              margin: const EdgeInsets.fromLTRB(
+                16,
+                4,
+                16,
+                12,
+              ),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
+                padding:
+                    const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 8,
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.shopping_bag_outlined),
+                    const Icon(
+                      Icons
+                          .shopping_bag_outlined,
+                    ),
+
                     const SizedBox(width: 10),
+
                     Expanded(
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
+                        mainAxisSize:
+                            MainAxisSize.min,
                         children: [
                           const Text(
                             'Cart',
-                            style: TextStyle(fontWeight: FontWeight.w700),
+                            style: TextStyle(
+                              fontWeight:
+                                  FontWeight.w700,
+                            ),
                           ),
                           Text(
                             cart.isEmpty
                                 ? 'No items yet'
                                 : '$cartCount items · ₱${cartTotal.toStringAsFixed(2)}',
                             maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            overflow:
+                                TextOverflow
+                                    .ellipsis,
                           ),
                         ],
                       ),
                     ),
+
                     const SizedBox(width: 8),
+
                     FilledButton(
-                      onPressed: cart.isEmpty ? null : checkout,
-                      child: const Text('Checkout'),
+                      onPressed:
+                          cart.isEmpty
+                              ? null
+                              : checkout,
+                      child: const Text(
+                        'Checkout',
+                      ),
                     ),
                   ],
                 ),
@@ -384,6 +788,10 @@ class _StudentPageState extends ConsumerState<StudentPage> {
     );
   }
 }
+
+// ==================================================================
+// CUSTOMER DETAILS
+// ==================================================================
 
 class _CustomerDetails {
   final String name;
@@ -397,18 +805,63 @@ class _CustomerDetails {
   });
 }
 
-class _CustomerDetailsDialog extends StatefulWidget {
-  const _CustomerDetailsDialog();
+// ==================================================================
+// CUSTOMER DETAILS DIALOG
+// ==================================================================
+
+class _CustomerDetailsDialog
+    extends StatefulWidget {
+  const _CustomerDetailsDialog({
+    this.initialName = '',
+    this.initialStudentId = '',
+    this.initialPhoneNumber = '',
+    this.isEditingProfile = false,
+  });
+
+  final String initialName;
+  final String initialStudentId;
+  final String initialPhoneNumber;
+  final bool isEditingProfile;
 
   @override
-  State<_CustomerDetailsDialog> createState() => _CustomerDetailsDialogState();
+  State<_CustomerDetailsDialog> createState() =>
+      _CustomerDetailsDialogState();
 }
 
-class _CustomerDetailsDialogState extends State<_CustomerDetailsDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _studentIdController = TextEditingController();
-  final _phoneController = TextEditingController();
+class _CustomerDetailsDialogState
+    extends State<_CustomerDetailsDialog> {
+  final _formKey =
+      GlobalKey<FormState>();
+
+  late final TextEditingController
+      _nameController;
+
+  late final TextEditingController
+      _studentIdController;
+
+  late final TextEditingController
+      _phoneController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Explicitly load the values passed from Supabase.
+    _nameController =
+        TextEditingController(
+      text: widget.initialName,
+    );
+
+    _studentIdController =
+        TextEditingController(
+      text: widget.initialStudentId,
+    );
+
+    _phoneController =
+        TextEditingController(
+      text: widget.initialPhoneNumber,
+    );
+  }
 
   @override
   void dispose() {
@@ -418,14 +871,23 @@ class _CustomerDetailsDialogState extends State<_CustomerDetailsDialog> {
     super.dispose();
   }
 
+  // ============================================================
+  // SUBMIT
+  // ============================================================
+
   void _submit() {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
     Navigator.pop(
       context,
       _CustomerDetails(
         name: _nameController.text.trim(),
-        studentId: _studentIdController.text.trim(),
-        phoneNumber: _phoneController.text.trim(),
+        studentId:
+            _studentIdController.text.trim(),
+        phoneNumber:
+            _phoneController.text.trim(),
       ),
     );
   }
@@ -433,45 +895,104 @@ class _CustomerDetailsDialogState extends State<_CustomerDetailsDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Student details'),
+      title: Text(
+        widget.isEditingProfile
+            ? 'Edit Profile'
+            : 'Student details',
+      ),
+
       content: Form(
         key: _formKey,
+
         child: SingleChildScrollView(
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize:
+                MainAxisSize.min,
             children: [
+              // ======================================================
+              // FULL NAME
+              // ======================================================
+
               TextFormField(
                 controller: _nameController,
-                textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(
+                textCapitalization:
+                    TextCapitalization.words,
+                decoration:
+                    const InputDecoration(
                   labelText: 'Full name',
-                  prefixIcon: Icon(Icons.person_outline),
+                  prefixIcon:
+                      Icon(
+                    Icons.person_outline,
+                  ),
                 ),
-                validator: (value) => _required(value, 'Enter your name'),
+                validator: (value) =>
+                    _required(
+                  value,
+                  'Enter your name',
+                ),
               ),
+
               const SizedBox(height: 12),
+
+              // ======================================================
+              // STUDENT ID
+              // ======================================================
+
               TextFormField(
-                controller: _studentIdController,
-                decoration: const InputDecoration(
+                controller:
+                    _studentIdController,
+                decoration:
+                    const InputDecoration(
                   labelText: 'Student ID',
-                  prefixIcon: Icon(Icons.badge_outlined),
+                  prefixIcon:
+                      Icon(
+                    Icons.badge_outlined,
+                  ),
                 ),
-                validator: (value) => _required(value, 'Enter your student ID'),
+                validator: (value) =>
+                    _required(
+                  value,
+                  'Enter your student ID',
+                ),
               ),
+
               const SizedBox(height: 12),
+
+              // ======================================================
+              // PHONE
+              // ======================================================
+
               TextFormField(
-                controller: _phoneController,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
+                controller:
+                    _phoneController,
+                keyboardType:
+                    TextInputType.phone,
+                decoration:
+                    const InputDecoration(
                   labelText: 'Phone number',
-                  prefixIcon: Icon(Icons.phone_outlined),
+                  prefixIcon:
+                      Icon(
+                    Icons.phone_outlined,
+                  ),
                 ),
                 validator: (value) {
-                  final error = _required(value, 'Enter your phone number');
-                  if (error != null) return error;
-                  if (value!.trim().length < 7) {
+                  final error =
+                      _required(
+                    value,
+                    'Enter your phone number',
+                  );
+
+                  if (error != null) {
+                    return error;
+                  }
+
+                  if (value!
+                          .trim()
+                          .length <
+                      7) {
                     return 'Enter a valid phone number';
                   }
+
                   return null;
                 },
               ),
@@ -479,21 +1000,38 @@ class _CustomerDetailsDialogState extends State<_CustomerDetailsDialog> {
           ),
         ),
       ),
+
+      // ============================================================
+      // BUTTONS
+      // ============================================================
+
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('CANCEL'),
+          onPressed: () =>
+              Navigator.pop(context),
+          child:
+              const Text('CANCEL'),
         ),
-        FilledButton.icon(
+
+        FilledButton(
           onPressed: _submit,
-          icon: const Icon(Icons.check),
-          label: const Text('PLACE ORDER'),
+          child: Text(
+            widget.isEditingProfile
+                ? 'SAVE CHANGES'
+                : 'PLACE ORDER',
+          ),
         ),
       ],
     );
   }
 
-  String? _required(String? value, String message) {
-    return value == null || value.trim().isEmpty ? message : null;
+  String? _required(
+    String? value,
+    String message,
+  ) {
+    return value == null ||
+            value.trim().isEmpty
+        ? message
+        : null;
   }
 }

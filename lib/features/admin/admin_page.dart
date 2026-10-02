@@ -33,7 +33,7 @@ class _AdminPageState extends ConsumerState<AdminPage> {
       return;
     }
     final user = Supabase.instance.client.auth.currentUser;
-    final role = user?.userMetadata?['role'] ?? user?.appMetadata['role'];
+    final role = user?.appMetadata['role'];
     if (!mounted || role?.toString().toLowerCase() == 'admin') return;
     context.go('/login?mode=staff');
   }

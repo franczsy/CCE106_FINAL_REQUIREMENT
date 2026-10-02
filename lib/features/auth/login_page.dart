@@ -58,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   bool _isAdmin(User? user) {
-    final role = user?.userMetadata?['role'] ?? user?.appMetadata['role'];
+    final role = user?.appMetadata['role'];
     return role?.toString().toLowerCase() == 'admin';
   }
 
